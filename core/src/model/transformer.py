@@ -25,6 +25,7 @@ from .memory import HashingMemory
 from .tim import TIM_EncoderLayer
 from .tim_supplementary import TransformerEncoderLayer, TransformerDecoderLayer
 from .quantization import QuantizerFunction, getQuantizerFunction
+from .dynamic_modules import HierachicalModuleSelection, HMSIdentity
 
 N_MAX_POSITIONS = 512  # maximum input sequence length
 
@@ -344,6 +345,13 @@ class TransformerModel(nn.Module):
             q_fnn = False
             q_comm = False
 
+            key_dim = self.dim
+            num_heads = 2
+            if True :
+                self.specialists_selection = HierachicalModuleSelection(query_dim=self.dim, n_specialists=self.n_layers+1, key_dim=key_dim, num_heads=num_heads)
+            else :
+                self.specialists_selection = HMSIdentity(query_dim=dim, n_specialists=self.n_layers+1, key_dim=key_dim, num_heads=num_heads)
+
             # transformer layers
             self.attentions = nn.ModuleList()
             self.quantizers1 = nn.ModuleList()
@@ -541,10 +549,10 @@ class TransformerModel(nn.Module):
                         q_loss = 0
                     else :
                         if not self.is_decoder : # or src_enc is None:
-                            print(tensor.shape, src_enc.shape if src_enc is not None else "-", "**")
+                            #print(tensor.shape, src_enc.shape if src_enc is not None else "-", "**")
                             tensor,_, q_loss = self.tim_layers[j](tensor, src_mask = src_mask, src_key_padding_mask = src_key_padding_mask)
                         else :
-                            print(tensor.shape, src_enc.shape if src_enc is not None else "-", "****")
+                            #print(tensor.shape, src_enc.shape if src_enc is not None else "-", "****")
                             tensor,_,_, q_loss = self.tim_layers[j](tgt = tensor, memory = src_enc, tgt_mask=attn_mask, memory_mask=src_mask, 
                                                           tgt_key_padding_mask=src_key_padding_mask, 
                                                           memory_key_padding_mask=None # TODO
@@ -590,6 +598,7 @@ class TransformerModel(nn.Module):
                 states.append(tensor)
                 extra_loss.append(q_loss)
 
+        tensor = self.specialists_selection(tensor, states)
         # update cache length
         if cache is not None:
             cache['slen'] += tensor.size(1)

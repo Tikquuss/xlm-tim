@@ -87,7 +87,8 @@ class QuantizerFunction(nn.Module):
 
 
             if self.Method=="Quantization":
-                state=state.reshape(bsz*T,1,Hsz)
+                # bs x s_len x dim
+                #state=state.reshape(bsz*T,1,Hsz)
                 state,CBloss,ind=self.QuantizeFunctions(state)#use a fixed function to discretize
 
 

@@ -3,7 +3,7 @@ import torch.nn as nn
 import math
 import numpy as np
 import torch.nn.functional as F
-import distributed as dist_fn
+#import distributed as dist_fn
 
 import torch
 from torch import nn, einsum
