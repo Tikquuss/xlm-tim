@@ -1,3 +1,4 @@
+pandas==1.2
 clean-text
 fastbpe
 bleu

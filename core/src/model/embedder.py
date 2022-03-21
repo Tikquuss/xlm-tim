@@ -218,7 +218,7 @@ class SentenceEmbedder(object):
         assert lengths.size(0) == bs and lengths.max().item() == slen
 
         # get transformer last hidden layer
-        tensor = self.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)#.contiguous()
+        tensor, q_loss = self.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)#.contiguous()
         assert tensor.size() == (slen, bs, self.out_dim)
 
         # single-vector sentence representation (first column of last layer)

@@ -23,8 +23,8 @@ import torch.nn.functional as F
 
 from .memory import HashingMemory
 from .tim import TIM_EncoderLayer
-from .tim_supplementary import TransformerEncoderLayer
-
+from .tim_supplementary import TransformerEncoderLayer, TransformerDecoderLayer
+from .quantization import QuantizerFunction, getQuantizerFunction
 
 N_MAX_POSITIONS = 512  # maximum input sequence length
 
@@ -280,7 +280,8 @@ class TransformerModel(nn.Module):
         self.dim = params.emb_dim       # 512 by default
         if getattr(self, 'backbone', None) is None :
             #self.hidden_dim = self.dim * 4  # 2048 by default
-            self.hidden_dim = params.dim_feedforward  # 2048 by default
+            #self.hidden_dim = params.dim_feedforward  
+            self.hidden_dim = getattr(params, 'dim_feedforward', 4 * self.dim) 
             self.n_heads = params.n_heads   # 8 by default
             self.n_layers = params.n_layers
             self.dropout = params.dropout
@@ -290,9 +291,7 @@ class TransformerModel(nn.Module):
             # TIM layers positions an parameters
             self.tim_layers_pos = []
             self.use_mine = params.use_mine
-            if params.tim_layers_pos != ""  and not self.is_decoder:
-                self.tim_layers_pos = [int(pos) for pos in params.tim_layers_pos.split(",")]
-                assert all([ 0 <= pos <= params.n_layers - 1 for pos in self.tim_layers_pos])
+            if params.tim_layers_pos != ""  : #and not self.is_decoder:
                 self.n_s, self.H, self.H_c = params.n_s, params.H, params.H_c
                 self.custom_mha = params.custom_mha
                 self.d_k, self.d_v = params.d_k, params.d_v
@@ -303,6 +302,19 @@ class TransformerModel(nn.Module):
                     self.d_k = d_mech // self.H
                     self.d_v = d_mech // self.H
                     assert self.H == self.H_c
+
+                self.all_ns = []
+                for pos in params.tim_layers_pos.split(","):
+                    pos = pos.split("-")
+                    if len(pos) == 1 :
+                        self.tim_layers_pos.append(int(pos[0]))
+                        self.all_ns.append(self.n_s)
+                    elif len(pos) == 2 :
+                        self.tim_layers_pos.append(int(pos[0]))
+                        self.all_ns.append(int(pos[1]))
+                    else :
+                        raise RuntimeError("Incorrect params")
+                assert all([ 0 <= pos <= params.n_layers - 1 for pos in self.tim_layers_pos])
 
         # embeddings
         self.with_emb = with_emb
@@ -316,21 +328,35 @@ class TransformerModel(nn.Module):
             self.layer_norm_emb = nn.LayerNorm(self.dim, eps=1e-12)
 
         if getattr(params, "simple_model", "") :
+            # MLP, RNN, LSTM, CNN ... Any model capable of taking h ~ (bs, seq_len, hidden_dim) and returning a tensor of same shape.
             #self.backbone = build_model(params, logger, pre_trainer = None)
             self.backbone = params.model_class(1, params = params, logger = logger, with_output = False).to(params.device)
             self.backbone.embedding = nn.Identity()
             #self.backbone.pred_layer = None
         else :
+            q_method = None, #"Original", "Quantization", "Adaptive_Quantization", "Adaptive_Hierachical"
+            q_method = "Original"
+            q_method = "Adaptive_Hierachical"
+            q_method = "Adaptive_Quantization"
+            codebook_size = 16
+            n_factors = [1,2,4]
+            q_attn = False
+            q_fnn = False
+            q_comm = False
+
             # transformer layers
             self.attentions = nn.ModuleList()
+            self.quantizers1 = nn.ModuleList()
             self.layer_norm1 = nn.ModuleList()
             self.ffns = nn.ModuleList()
+            self.quantizers2 = nn.ModuleList()
             self.layer_norm2 = nn.ModuleList()
             if self.tim_layers_pos :
                 self.tim_layers = nn.ModuleList()
             if self.is_decoder:
                 self.layer_norm15 = nn.ModuleList()
                 self.encoder_attn = nn.ModuleList()
+                self.quantizers15 = nn.ModuleList()
 
             # memories
             self.memories = nn.ModuleDict()
@@ -341,11 +367,13 @@ class TransformerModel(nn.Module):
                     assert pos in ['in', 'after']
                     self.memories['%i_%s' % (layer_id, pos)] = HashingMemory.build(self.dim, self.dim, params)
             
+            i=-1
             for layer_id in range(self.n_layers):
                 if layer_id in self.tim_layers_pos :
+                    i+=1
                     if self.use_mine :
                         self.tim_layers.append(
-                            TIM_EncoderLayer(self.dim, self.hidden_dim, self.n_s, self.d_k, self.d_v, 
+                            TIM_EncoderLayer(self.dim, self.hidden_dim, self.all_ns[i], self.d_k, self.d_v, 
                                             self.H, self.H_c, 
                                             custom_mha = None if self.custom_mha else MultiHeadAttention)
                         )
@@ -358,21 +386,53 @@ class TransformerModel(nn.Module):
                                                     vdim=self.d_v,
                                                     dropout=self.attention_dropout,
                                                     activation= nn.GELU if params.gelu_activation else nn.ReLU,
-                                                    num_modules=self.n_s,
-                                                    use_group_comm = params.use_group_comm
-                            )
+                                                    num_modules=self.all_ns[i],
+                                                    use_group_comm = params.use_group_comm,
+                                                    q_method = q_method, 
+                                                    codebook_size = codebook_size,
+                                                    n_factors = n_factors,
+                                                    q_attn = q_attn,
+                                                    q_fnn = q_fnn,
+                                                    q_comm = q_comm
+                            ) 
+                            if is_encoder else
+                            TransformerDecoderLayer(
+                                                    d_ffn=self.hidden_dim,
+                                                    nhead=self.n_heads,
+                                                    kdim=self.d_k,
+                                                    vdim=self.d_v,
+                                                    dropout=self.attention_dropout,
+                                                    activation= nn.GELU if params.gelu_activation else nn.ReLU,
+                                                    num_modules=self.all_ns[i],
+                                                    use_group_comm = params.use_group_comm,
+                                                    q_method = q_method, 
+                                                    codebook_size = codebook_size,
+                                                    n_factors = n_factors,
+                                                    q_attn = q_attn,
+                                                    q_fnn = q_fnn,
+                                                    q_comm = q_comm
+                            ) 
                         )
-                        _,_ = self.tim_layers[-1](src = torch.rand((1, 1, self.dim)), init_params = True)
+                        if is_encoder :
+                            _ = self.tim_layers[-1](src = torch.rand((1, 1, self.dim)), init_params = True)
+                        else :
+                            _ = self.tim_layers[-1](tgt = torch.rand((1, 1, self.dim)), memory = torch.rand((1, 1, self.dim)), init_params = True)
+                            pass
+
                 else :
                     self.attentions.append(MultiHeadAttention(self.n_heads, self.dim, dropout=self.attention_dropout))
+                    self.quantizers1.append(getQuantizerFunction(self.dim,  codebook_size, None if not q_attn else q_method, n_factors))
                     self.layer_norm1.append(nn.LayerNorm(self.dim, eps=1e-12))
                     if self.is_decoder:
                         self.layer_norm15.append(nn.LayerNorm(self.dim, eps=1e-12))
                         self.encoder_attn.append(MultiHeadAttention(self.n_heads, self.dim, dropout=self.attention_dropout))
+                        self.quantizers15.append(getQuantizerFunction(self.dim,  codebook_size, None if not q_attn else q_method, n_factors))
                     if ('%i_in' % layer_id) in self.memories:
                         self.ffns.append(None)
+                        self.quantizers2.append(None)
                     else:
                         self.ffns.append(TransformerFFN(self.dim, self.hidden_dim, self.dim, dropout=self.dropout, gelu_activation=params.gelu_activation))
+                        self.quantizers2.append(getQuantizerFunction(self.dim, codebook_size, None if not q_fnn else q_method, n_factors))
                     self.layer_norm2.append(nn.LayerNorm(self.dim, eps=1e-12))
 
         # output layer
@@ -467,6 +527,7 @@ class TransformerModel(nn.Module):
             # transformer layers
             states = []
             states.append(tensor)
+            extra_loss = []
             i, j = 0, 0
             for k in range(self.n_layers):
                 if k in self.tim_layers_pos :
@@ -477,13 +538,25 @@ class TransformerModel(nn.Module):
                         src_mask = ~src_mask.to(torch.bool) if src_mask is not None else None
                     if self.use_mine :
                         tensor, _,_ = self.tim_layers[j](tensor, src_mask = src_mask, src_key_padding_mask = src_key_padding_mask)
+                        q_loss = 0
                     else :
-                        tensor,_ = self.tim_layers[j](tensor, src_mask = src_mask, src_key_padding_mask = src_key_padding_mask)
+                        if not self.is_decoder : # or src_enc is None:
+                            print(tensor.shape, src_enc.shape if src_enc is not None else "-", "**")
+                            tensor,_, q_loss = self.tim_layers[j](tensor, src_mask = src_mask, src_key_padding_mask = src_key_padding_mask)
+                        else :
+                            print(tensor.shape, src_enc.shape if src_enc is not None else "-", "****")
+                            tensor,_,_, q_loss = self.tim_layers[j](tgt = tensor, memory = src_enc, tgt_mask=attn_mask, memory_mask=src_mask, 
+                                                          tgt_key_padding_mask=src_key_padding_mask, 
+                                                          memory_key_padding_mask=None # TODO
+                                                          )
                     j += 1
                 else :
                     # self attention
+                    q_loss = 0
                     attn = self.attentions[i](tensor, attn_mask, cache=cache)
                     attn = F.dropout(attn, p=self.dropout, training=self.training)
+                    attn, q_loss1, _ = self.quantizers1[i](attn)
+                    q_loss = q_loss + q_loss1
                     tensor = tensor + attn
                     tensor = self.layer_norm1[i](tensor)
 
@@ -491,6 +564,8 @@ class TransformerModel(nn.Module):
                     if self.is_decoder and src_enc is not None:
                         attn = self.encoder_attn[i](tensor, src_mask, kv=src_enc, cache=cache)
                         attn = F.dropout(attn, p=self.dropout, training=self.training)
+                        attn, q_loss1, _ = self.quantizers15[i](attn)
+                        q_loss = q_loss + q_loss1
                         tensor = tensor + attn
                         tensor = self.layer_norm15[i](tensor)
 
@@ -498,7 +573,10 @@ class TransformerModel(nn.Module):
                     if ('%i_in' % i) in self.memories:
                         tensor = tensor + self.memories['%i_in' % i](tensor)
                     else:
-                        tensor = tensor + self.ffns[i](tensor)
+                        #q = self.ffns[i](tensor)
+                        q, q_loss1, _ = self.quantizers2[i](self.ffns[i](tensor))
+                        q_loss = q_loss + q_loss1
+                        tensor = tensor + q
                     tensor = self.layer_norm2[i](tensor)
 
                     # memory
@@ -510,6 +588,7 @@ class TransformerModel(nn.Module):
 
                 tensor *= mask.unsqueeze(-1).to(tensor.dtype)
                 states.append(tensor)
+                extra_loss.append(q_loss)
 
         # update cache length
         if cache is not None:
@@ -517,8 +596,8 @@ class TransformerModel(nn.Module):
 
         # move back sequence length to dimension 0
         tensor = tensor.transpose(0, 1)
-
-        return tensor if not intermediate_states else (tensor, states)
+        q_loss = sum(extra_loss) / len(extra_loss)
+        return (tensor, q_loss) if not intermediate_states else (tensor, q_loss, states)
 
     def predict(self, tensor, pred_mask, y, get_scores, reduction='mean'):
         """
@@ -582,7 +661,7 @@ class TransformerModel(nn.Module):
         while cur_len < max_len:
 
             # compute word scores
-            tensor = self.forward(
+            tensor, _ = self.forward(
                 'fwd',
                 x=generated[:cur_len],
                 lengths=gen_len,
@@ -692,7 +771,7 @@ class TransformerModel(nn.Module):
         while cur_len < max_len:
 
             # compute word scores
-            tensor = self.forward(
+            tensor, _ = self.forward(
                 'fwd',
                 x=generated[:cur_len],
                 lengths=src_len.new(bs * beam_size).fill_(cur_len),

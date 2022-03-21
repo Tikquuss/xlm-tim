@@ -835,10 +835,10 @@ class Trainer(object):
             x, lengths, langs, pred_mask, y = to_cuda(x, lengths, langs, pred_mask, y)
 
             # forward / loss
-            tensor = model('fwd', x=x, lengths=lengths, langs=langs, causal=True)
+            tensor, q_loss = model('fwd', x=x, lengths=lengths, langs=langs, causal=True)
             _, loss = model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
             self.stats[('CLM-%s' % lang1) if lang2 is None else ('CLM-%s-%s' % (lang1, lang2))].append(loss.item())
-            loss = lambda_coeff * loss
+            loss = lambda_coeff * (loss + q_loss)
 
             # optimize
             self.optimize(loss)
@@ -877,10 +877,10 @@ class Trainer(object):
                     x, lengths, langs, pred_mask, y = to_cuda(x, lengths, langs, pred_mask, y)
 
                     # forward / loss
-                    tensor = model('fwd', x=x, lengths=lengths, langs=langs, causal=True)
+                    tensor, q_loss = model('fwd', x=x, lengths=lengths, langs=langs, causal=True)
                     _, task_loss = model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
                     #self.stats[('CLM-%s' % lang1) if lang2 is None else ('CLM-%s-%s' % (lang1, lang2))].append(task_loss.item())
-                    task_loss = lambda_coeff * task_loss
+                    task_loss = lambda_coeff * (task_loss + q_loss)
 
                     total_loss = total_loss + task_loss
 
@@ -935,10 +935,10 @@ class Trainer(object):
             x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
 
             # forward / loss
-            tensor = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+            tensor, q_loss = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
             _, loss = model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
             self.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(loss.item())
-            loss = lambda_coeff * loss
+            loss = lambda_coeff * (loss + q_loss)
 
             # optimize
             self.optimize(loss)
@@ -973,10 +973,10 @@ class Trainer(object):
                     x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
 
                     # forward / loss
-                    tensor = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+                    tensor, q_loss = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
                     _, task_loss = model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
                     self.stats[data_key][('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(task_loss.item())
-                    task_loss = lambda_coeff * task_loss
+                    task_loss = lambda_coeff * (task_loss + q_loss)
 
                     total_loss = total_loss + task_loss 
 
@@ -1044,7 +1044,7 @@ class Trainer(object):
             x, lengths, positions, langs = to_cuda(x, lengths, positions, langs)
 
             # get sentence embeddings
-            h = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)[0]
+            h, q_loss = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)[0]
 
             # parallel classification loss
             CLF_ID1, CLF_ID2 = 8, 9  # very hacky, use embeddings to make weights for the classifier
@@ -1052,7 +1052,7 @@ class Trainer(object):
             pred = F.linear(h, emb[CLF_ID1].unsqueeze(0), emb[CLF_ID2, 0])
             loss = F.binary_cross_entropy_with_logits(pred.view(-1), y.to(pred.device).type_as(pred))
             self.stats['PC-%s-%s' % (lang1, lang2)].append(loss.item())
-            loss = lambda_coeff * loss
+            loss = lambda_coeff * (loss + q_loss)
 
             # optimize
             self.optimize(loss)
@@ -1105,7 +1105,7 @@ class Trainer(object):
                     x, lengths, positions, langs = to_cuda(x, lengths, positions, langs)
 
                     # get sentence embeddings
-                    h = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)[0]
+                    h, q_loss = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)[0]
 
                     # parallel classification loss
                     CLF_ID1, CLF_ID2 = 8, 9  # very hacky, use embeddings to make weights for the classifier
@@ -1113,7 +1113,7 @@ class Trainer(object):
                     pred = F.linear(h, emb[CLF_ID1].unsqueeze(0), emb[CLF_ID2, 0])
                     task_loss = F.binary_cross_entropy_with_logits(pred.view(-1), y.to(pred.device).type_as(pred))
                     self.stats[data_key]['PC-%s-%s' % (lang1, lang2)].append(task_loss.item())
-                    task_loss = lambda_coeff * task_loss
+                    task_loss = lambda_coeff * (task_loss + q_loss)
 
                     # optimize
                     #self.optimize(task_loss)
@@ -1204,16 +1204,16 @@ class EncDecTrainer(Trainer):
             x1, len1, langs1, x2, len2, langs2, y = to_cuda(x1, len1, langs1, x2, len2, langs2, y)
 
             # encode source sentence
-            enc1 = self.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+            enc1, q_loss1 = self.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
             enc1 = enc1.transpose(0, 1)
 
             # decode target sentence
-            dec2 = self.decoder('fwd', x=x2, lengths=len2, langs=langs2, causal=True, src_enc=enc1, src_len=len1)
+            dec2, q_loss2 = self.decoder('fwd', x=x2, lengths=len2, langs=langs2, causal=True, src_enc=enc1, src_len=len1)
 
             # loss
             _, loss = self.decoder('predict', tensor=dec2, pred_mask=pred_mask, y=y, get_scores=False)
             self.stats[('AE-%s' % lang1) if lang1 == lang2 else ('MT-%s-%s' % (lang1, lang2))].append(loss.item())
-            loss = lambda_coeff * loss
+            loss = lambda_coeff * (loss + q_loss1 + q_loss2)
 
             # optimize
             self.optimize(loss)
@@ -1264,16 +1264,16 @@ class EncDecTrainer(Trainer):
                     x1, len1, langs1, x2, len2, langs2, y = to_cuda(x1, len1, langs1, x2, len2, langs2, y)
 
                     # encode source sentence
-                    enc1 = self.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+                    enc1, q_loss1 = self.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
                     enc1 = enc1.transpose(0, 1)
 
                     # decode target sentence
-                    dec2 = self.decoder('fwd', x=x2, lengths=len2, langs=langs2, causal=True, src_enc=enc1, src_len=len1)
+                    dec2, q_loss2 = self.decoder('fwd', x=x2, lengths=len2, langs=langs2, causal=True, src_enc=enc1, src_len=len1)
 
                     # loss
                     _, task_loss = self.decoder('predict', tensor=dec2, pred_mask=pred_mask, y=y, get_scores=False)
                     self.stats[data_key][('AE-%s' % lang1) if lang1 == lang2 else ('MT-%s-%s' % (lang1, lang2))].append(task_loss.item())
-                    task_loss = lambda_coeff * task_loss
+                    task_loss = lambda_coeff * (task_loss + q_loss1 + q_loss2)
 
                     total_loss = total_loss + task_loss
 
@@ -1336,7 +1336,7 @@ class EncDecTrainer(Trainer):
                 self.decoder.eval()
 
                 # encode source sentence and translate it
-                enc1 = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+                enc1, _ = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
                 enc1 = enc1.transpose(0, 1)
                 x2, len2 = _decoder.generate(enc1, len1, lang2_id, max_len=int(1.3 * len1.max().item() + 5))
                 langs2 = x2.clone().fill_(lang2_id)
@@ -1349,7 +1349,7 @@ class EncDecTrainer(Trainer):
                 self.decoder.train()
 
             # encode generate sentence
-            enc2 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False)
+            enc2, q_loss1 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False)
             enc2 = enc2.transpose(0, 1)
 
             # words to predict
@@ -1358,12 +1358,12 @@ class EncDecTrainer(Trainer):
             y1 = x1[1:].masked_select(pred_mask[:-1])
 
             # decode original sentence
-            dec3 = self.decoder('fwd', x=x1, lengths=len1, langs=langs1, causal=True, src_enc=enc2, src_len=len2)
+            dec3, q_loss2 = self.decoder('fwd', x=x1, lengths=len1, langs=langs1, causal=True, src_enc=enc2, src_len=len2)
 
             # loss
             _, loss = self.decoder('predict', tensor=dec3, pred_mask=pred_mask, y=y1, get_scores=False)
             self.stats[('BT-%s-%s-%s' % (lang1, lang2, lang3))].append(loss.item())
-            loss = lambda_coeff * loss
+            loss = lambda_coeff * (loss + q_loss1 + q_loss2)
 
             # optimize
             self.optimize(loss)
@@ -1410,7 +1410,7 @@ class EncDecTrainer(Trainer):
                         self.decoder.eval()
 
                         # encode source sentence and translate it
-                        enc1 = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+                        enc1, _ = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
                         enc1 = enc1.transpose(0, 1)
                         x2, len2 = _decoder.generate(enc1, len1, lang2_id, max_len=int(1.3 * len1.max().item() + 5))
                         langs2 = x2.clone().fill_(lang2_id)
@@ -1423,7 +1423,7 @@ class EncDecTrainer(Trainer):
                         self.decoder.train()
 
                     # encode generate sentence
-                    enc2 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False)
+                    enc2, q_loss1 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False)
                     enc2 = enc2.transpose(0, 1)
 
                     # words to predict
@@ -1432,12 +1432,12 @@ class EncDecTrainer(Trainer):
                     y1 = x1[1:].masked_select(pred_mask[:-1])
 
                     # decode original sentence
-                    dec3 = self.decoder('fwd', x=x1, lengths=len1, langs=langs1, causal=True, src_enc=enc2, src_len=len2)
+                    dec3, q_loss2 = self.decoder('fwd', x=x1, lengths=len1, langs=langs1, causal=True, src_enc=enc2, src_len=len2)
 
                     # loss
                     _, task_loss = self.decoder('predict', tensor=dec3, pred_mask=pred_mask, y=y1, get_scores=False)
                     self.stats[data_key][('BT-%s-%s-%s' % (lang1, lang2, lang3))].append(task_loss.item())
-                    task_loss = lambda_coeff * task_loss
+                    task_loss = lambda_coeff * (task_loss + q_loss1 + q_loss2)
 
                     total_loss = total_loss + task_loss
 

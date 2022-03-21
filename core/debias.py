@@ -247,7 +247,7 @@ class Debias_Trainer(Trainer) :
         
     def classif_step(self, get_loss, y, batch):
         (x, lengths, langs), _, _, _ = batch
-        z, z_list = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, 
+        z, q_loss, z_list = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, 
                 causal=False, intermediate_states = True)
         logits, classif_loss = self.model.predict(
             z, y, weights = self.val_data_iter.weights)
@@ -256,7 +256,7 @@ class Debias_Trainer(Trainer) :
             y_hat = stats["logits"]
         else :
             y_hat = stats["label_pred"]
-        return classif_loss, logits, z, z_list, stats, y_hat
+        return classif_loss + q_loss, logits, z, z_list, stats, y_hat
 
     def debias_step(self, y, lengths, z, z_list, mask_deb, bs):
         if mask_deb is not None:
@@ -265,7 +265,7 @@ class Debias_Trainer(Trainer) :
         else :
             lengths_deb = lengths 
             z_deb = z + 0.0
-        z_prime, z_prime_list = self.deb('fwd', x=z_deb, lengths=lengths_deb, 
+        z_prime, q_loss, z_prime_list = self.deb('fwd', x=z_deb, lengths=lengths_deb, 
             causal=False, intermediate_states = True)
         z_prime = z_prime.transpose(0, 1)
         if self.params.type_penalty == "last" :
@@ -313,7 +313,7 @@ class Debias_Trainer(Trainer) :
         loss_deb.backward(retain_graph=True)
         self.deb_optimizer.step()
 
-        return loss_deb, z_prime, lengths_deb
+        return loss_deb + q_loss, z_prime, lengths_deb
 
     def enc_dec(self, x, lengths, langs, z, non_mask_deb, bs):
         if non_mask_deb is not None :
@@ -344,7 +344,7 @@ class Debias_Trainer(Trainer) :
             x1, len1, x2, len2, y = to_cuda(x1, len1, x2, len2, y)
             # encode source sentence
             langs1 = langs_non_deb[torch.arange(x1.size(0))]
-            enc1 = self.pre_trainer.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+            enc1, q_loss1 = self.pre_trainer.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
             enc1 = enc1.transpose(0, 1)
             #lambda_coeff = self.pre_trainer.params.lambda_ae
             lambda_coeff = 1
@@ -359,17 +359,19 @@ class Debias_Trainer(Trainer) :
             # cuda
             y = y.to(x_non_deb.device)
             lambda_coeff = 1
-        dec2 = self.pre_trainer.decoder('fwd', x=x2, lengths=len2, langs=langs_non_deb, causal=True, src_enc=enc1, src_len=len1)
+            q_loss1 = 0
+
+        dec2, q_loss2 = self.pre_trainer.decoder('fwd', x=x2, lengths=len2, langs=langs_non_deb, causal=True, src_enc=enc1, src_len=len1)
         word_scores, loss_rec = self.pre_trainer.decoder('predict', tensor=dec2, pred_mask=pred_mask, y=y, get_scores=False)
         loss_rec = lambda_coeff * loss_rec
 
-        return loss_rec, word_scores, y
+        return loss_rec + q_loss1 + q_loss2, word_scores, y
 
     def generate(self, x, lengths, langs, z, z_prime = None, log = True, max_print=2):
         input_sent = convert_to_text(x, lengths, self.evaluator.dico, self.pre_trainer.params)
         with torch.no_grad(): 
             if z_prime is None :
-                z_prime = self.deb('fwd', x=z, lengths=lengths, causal=False)
+                z_prime, _ = self.deb('fwd', x=z, lengths=lengths, causal=False)
                 z_prime = z_prime.transpose(0, 1)
             """
             #lang1, lang2 = self.pre_trainer.params.mt_steps[0]
@@ -546,7 +548,7 @@ class Debias_Trainer(Trainer) :
                     z = z.transpose(0, 1) # (bs-ϵ, seq_len, dim)
                     bs = z.size(0)
 
-                    z_prime = self.deb('fwd', x=z, lengths=lengths, causal=False)
+                    z_prime, _ = self.deb('fwd', x=z, lengths=lengths, causal=False)
                     z_prime = z_prime.transpose(0, 1) # (bs-ϵ, seq_len, dim)
 
                     non_mask_deb = torch.BoolTensor([True]*bs)
@@ -670,7 +672,7 @@ class Debias_Trainer(Trainer) :
                 x, y, y2, lengths, langs = to_cuda(x, y, y2, lengths, langs)
                 #langs = None
                 batch = [(x, lengths, langs), y1, y2, weight_out]
-                origin_data = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, causal=False)
+                origin_data, _ = self.pre_trainer.encoder('fwd', x=x, lengths=lengths, langs=langs, causal=False)
                 # Define target label
                 if self.bin_classif :
                     #y_prime = self.max_label - y

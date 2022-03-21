@@ -14,6 +14,7 @@ from .mechanism_communication import (
     MechanismCommunication,
 )
 
+from ..quantization import getQuantizerFunction
 
 class TransformerInterface(nn.Module):
     """This is an interface for transformer model. Users can modify the attributes and
@@ -192,6 +193,12 @@ class TransformerEncoderLayer(nn.Module):
         activation=nn.ReLU,
         num_modules=1,
         use_group_comm=False,
+        q_method = None, #"Original", "Quantization", "Adaptive_Quantization", "Adaptive_Hierachical"
+        codebook_size = 16,
+        n_factors = [1,2,4],
+        q_attn = False,
+        q_fnn = False,
+        q_comm = False
     ):
         super().__init__()
         self.self_att = MultiheadAttention(
@@ -200,6 +207,9 @@ class TransformerEncoderLayer(nn.Module):
         self.pos_ffn = PositionalwiseFeedForward(
             d_ffn=d_ffn, dropout=dropout, activation=activation, nb=num_modules,
         )
+
+        self.q_attn = getQuantizerFunction(kdim, codebook_size, None if not q_attn else q_method, n_factors)
+        self.q_fnn = getQuantizerFunction(kdim, codebook_size, None if not q_fnn else q_method, n_factors)
 
         self.num_modules = num_modules
         self.d_ffn = d_ffn
@@ -214,6 +224,7 @@ class TransformerEncoderLayer(nn.Module):
             self.group_comm = MechanismCommunication(d_ffn, num_modules)
             self.norm_comm = GroupLayerNorm(d_ffn, num_modules, eps=1e-6)
             self.dropout_comm = torch.nn.Dropout(dropout)
+            self.q_comm = getQuantizerFunction(kdim, codebook_size, None if not q_comm else q_method, n_factors)
 
     def init_params(self, first_input):
         self.din = first_input.shape[-1]
@@ -250,7 +261,7 @@ class TransformerEncoderLayer(nn.Module):
             )
             comp = comp.view((src.shape[0], src.shape[1], self.din))
         else:
-            comp = None
+            comp = 1.0
             self.comp_score = None
 
         output, self_attn = self.self_att(
@@ -262,27 +273,33 @@ class TransformerEncoderLayer(nn.Module):
             init_params=init_params,
         )
 
-        # add & norm
-        if comp is None:
-            src = src + self.dropout1(output)
-        else:
-            src = src + comp * self.dropout1(output)
+        q_loss = 0
 
+        # add & norm
+        output = self.dropout1(output)
+        output, extra_loss, _ = self.q_attn(output)
+        q_loss = q_loss + extra_loss
+        src = src + comp * output
         src = self.norm1(src, init_params=init_params)
 
         output = self.pos_ffn(src, init_params)
 
         # add & norm
-        output = src + self.dropout2(output)
+        output = self.dropout2(output)
+        output, extra_loss, _  = self.q_fnn(output)
+        q_loss = q_loss + extra_loss
+        output = src + output
         output = self.norm2(output, init_params=init_params)
 
         if self.use_group_comm:
             residual = output * 1.0
             output = self.group_comm(output, init_params=init_params)
             output = self.dropout_comm(output)
+            output, extra_loss, _  = self.q_comm(output)
+            q_loss = q_loss + extra_loss
             output = self.norm_comm(output + residual, init_params=init_params)
 
-        return output, self.comp_score
+        return output, self.comp_score, q_loss
 
 
 class TransformerEncoder(nn.Module):
@@ -325,6 +342,12 @@ class TransformerEncoder(nn.Module):
         return_attention=False,
         num_modules=1,
         use_group_comm=False,
+        q_method = None, #"Original", "Quantization", "Adaptive_Quantization", "Adaptive_Hierachical"
+        codebook_size = 16,
+        n_factors = [1,2,4],
+        q_attn = False,
+        q_fnn = False,
+        q_comm = False
     ):
         super().__init__()
         self.layers = torch.nn.ModuleList(
@@ -340,6 +363,12 @@ class TransformerEncoder(nn.Module):
                     if (j > 1 and j < num_layers - 1)
                     else 1,
                     use_group_comm=use_group_comm,
+                    q_method = q_method, 
+                    codebook_size = codebook_size,
+                    n_factors = n_factors,
+                    q_attn = q_attn,
+                    q_fnn = q_fnn,
+                    q_comm = q_comm
                 )
                 for j in range(num_layers)
             ]
@@ -362,19 +391,21 @@ class TransformerEncoder(nn.Module):
         """
         output = src
         attention_lst = []
+        extra_loss = []
         for enc_layer in self.layers:
-            output, attention = enc_layer(
+            output, attention, q_loss = enc_layer(
                 output,
                 src_mask=src_mask,
                 src_key_padding_mask=src_key_padding_mask,
                 init_params=init_params,
             )
             attention_lst.append(attention)
+            extra_loss.append(q_loss)
         output = self.norm(output, init_params=init_params)
 
         if self.return_attention:
-            return output, attention_lst
-        return output
+            return output, attention_lst, q_loss
+        return output, q_loss
 
 
 class TransformerDecoderLayer(nn.Module):
@@ -411,6 +442,12 @@ class TransformerDecoderLayer(nn.Module):
         activation=nn.ReLU,
         num_modules=1,
         use_group_comm=False,
+        q_method = None, #"Original", "Quantization", "Adaptive_Quantization", "Adaptive_Hierachical"
+        codebook_size = 16,
+        n_factors = [1,2,4],
+        q_attn = False,
+        q_fnn = False,
+        q_comm = False
     ):
         super().__init__()
         self.self_attn = MultiheadAttention(
@@ -423,6 +460,11 @@ class TransformerDecoderLayer(nn.Module):
             d_ffn=d_ffn, dropout=dropout, activation=activation, nb=num_modules,
         )
 
+        self.q_attn = getQuantizerFunction(kdim, codebook_size, None if not q_attn else q_method, n_factors)
+        self.q_mutihead_attn = getQuantizerFunction(kdim, codebook_size, None if not q_attn else q_method, n_factors)
+        self.q_fnn = getQuantizerFunction(kdim, codebook_size, None if not q_fnn else q_method, n_factors)
+
+        ############################
         self.num_modules = num_modules
         self.d_ffn = d_ffn
         if num_modules > 1:
@@ -431,12 +473,14 @@ class TransformerDecoderLayer(nn.Module):
             )
         else:
             self.competition = None
+        #######################################
 
         self.use_group_comm = use_group_comm
         if use_group_comm:
             self.group_comm = MechanismCommunication(d_ffn, num_modules)
             self.norm_comm = GroupLayerNorm(d_ffn, num_modules, eps=1e-6)
             self.dropout_comm = torch.nn.Dropout(dropout)
+            self.q_comm = getQuantizerFunction(kdim, codebook_size, None if not q_comm else q_method, n_factors)
 
         # normalization layers
         self.norm1 = GroupLayerNorm(d_ffn, num_modules, eps=1e-6)
@@ -445,6 +489,15 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout1 = torch.nn.Dropout(dropout)
         self.dropout2 = torch.nn.Dropout(dropout)
         self.dropout3 = torch.nn.Dropout(dropout)
+
+    def init_params(self, first_input):
+        self.din = first_input.shape[-1]
+        if self.num_modules > 1:
+            self.competition = GroupLinear(
+                self.din, self.num_modules, self.num_modules, a=0.05
+            ).to(first_input.device)
+        else:
+            self.competition = None
 
     def forward(
         self,
@@ -472,6 +525,8 @@ class TransformerDecoderLayer(nn.Module):
         memory_key_padding_mask: tensor
             the mask for the memory keys per batch (optional).
         """
+        if init_params:
+            self.init_params(tgt)
 
         if self.competition is not None:
             comp = self.competition(tgt)
@@ -481,7 +536,7 @@ class TransformerDecoderLayer(nn.Module):
             )
             comp = comp.view((tgt.shape[0], tgt.shape[1], self.d_ffn))
         else:
-            comp = None
+            comp = 1.0
 
         # self-attention over the target sequence
         tgt2, self_attn = self.self_attn(
@@ -493,11 +548,13 @@ class TransformerDecoderLayer(nn.Module):
             init_params=init_params,
         )
 
+        q_loss = 0
+
         # add & norm
-        if comp is None:
-            tgt = tgt + self.dropout1(tgt2)
-        else:
-            tgt = tgt + self.dropout1(tgt2) * comp
+        tgt2 = self.dropout1(tgt2)
+        tgt2, extra_loss, _ = self.q_attn(tgt2)
+        q_loss = q_loss + extra_loss
+        tgt = tgt + tgt2 * comp
 
         tgt = self.norm1(tgt, init_params)
 
@@ -512,22 +569,29 @@ class TransformerDecoderLayer(nn.Module):
         )
 
         # add & norm
-        tgt = tgt + self.dropout2(tgt2)
+        tgt2 = self.dropout2(tgt2)
+        tgt2, extra_loss, _ = self.q_attn(tgt2)
+        q_loss = q_loss + extra_loss
+        tgt = tgt + tgt2
         tgt = self.norm2(tgt, init_params)
 
         tgt = self.pos_ffn(tgt, init_params)
-
         # add & norm
-        tgt = tgt + self.dropout2(tgt2)
-        tgt = self.norm2(tgt, init_params)
+        tgt2 = self.dropout3(tgt2)
+        tgt2, extra_loss, _ = self.q_attn(tgt2)
+        q_loss = q_loss + extra_loss
+        tgt = tgt + tgt2
+        tgt = self.norm3(tgt, init_params)
 
         if self.use_group_comm:
             residual = tgt * 1.0
             tgt = self.group_comm(tgt, init_params=init_params)
             tgt = self.dropout_comm(tgt)
+            tgt, extra_loss, _ = self.q_attn(tgt)
+            q_loss = q_loss + extra_loss
             tgt = self.norm_comm(tgt + residual, init_params=init_params)
 
-        return tgt, self_attn, multihead_attention
+        return tgt, self_attn, multihead_attention, q_loss
 
 
 class TransformerDecoder(nn.Module):
@@ -566,6 +630,12 @@ class TransformerDecoder(nn.Module):
         return_attention=False,
         num_modules=1,
         use_group_comm=False,
+        q_method = None, #"Original", "Quantization", "Adaptive_Quantization", "Adaptive_Hierachical"
+        codebook_size = 16,
+        n_factors = [1,2,4],
+        q_attn = False,
+        q_fnn = False,
+        q_comm = False
     ):
         super().__init__()
         self.layers = torch.nn.ModuleList(
@@ -581,6 +651,12 @@ class TransformerDecoder(nn.Module):
                     if (j > 1 and j < num_layers - 1)
                     else 1,
                     use_group_comm=use_group_comm,
+                    q_method = q_method, 
+                    codebook_size = codebook_size,
+                    n_factors = n_factors,
+                    q_attn = q_attn,
+                    q_fnn = q_fnn,
+                    q_comm = q_comm
                 )
                 for j in range(num_layers)
             ]
@@ -616,8 +692,9 @@ class TransformerDecoder(nn.Module):
         """
         output = tgt
         self_attns, multihead_attns = [], []
+        extra_loss = []
         for dec_layer in self.layers:
-            output, self_attn, multihead_attn = dec_layer(
+            output, self_attn, multihead_attn, q_loss = dec_layer(
                 output,
                 memory,
                 tgt_mask=tgt_mask,
@@ -628,11 +705,12 @@ class TransformerDecoder(nn.Module):
             )
             self_attns.append(self_attn)
             multihead_attns.append(multihead_attn)
+            extra_loss.append(q_loss)
         output = self.norm(output, init_params=init_params)
 
         if self.return_attention:
-            return output, self_attns, multihead_attns
-        return output
+            return output, self_attns, multihead_attns, extra_loss
+        return output, extra_loss
 
 
 def get_key_padding_mask(padded_input, pad_idx):

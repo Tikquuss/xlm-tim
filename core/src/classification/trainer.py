@@ -687,7 +687,7 @@ class Trainer(object):
                 #if not (do_clm and sedat) :
                 if flag2 :
                     x_, lengths_, positions_, langs_ = to_cuda(x, lengths, positions, langs)
-                    U = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
+                    U, _ = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
                 if do_mlm :
                     try :
                         flag3 = True
@@ -712,8 +712,9 @@ class Trainer(object):
                             # cuda
                             x_, y_, pred_mask_, lengths_, positions_, langs_ = to_cuda(x_, y_, pred_mask_, lengths_, positions_, langs)
                             # forward / loss
-                            tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
+                            tensor, q_loss = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
                             word_scores, mlm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
+                            mlm_loss = mlm_loss + q_loss
 
                             y_hat = word_scores.max(1)[1]
                             #if self.n_total_iter % self.log_interval == 0:
@@ -772,10 +773,10 @@ class Trainer(object):
                             # cuda
                             x_, lengths_, langs_, pred_mask_, y_ = to_cuda(x_, lengths_, langs, pred_mask_, y_)
                             # forward / loss
-                            tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, langs=langs_, causal=True)
-                            
+                            tensor, q_loss = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, langs=langs_, causal=True)
                             word_scores, clm_loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask_, y=y_, get_scores=False)
-                            
+                            clm_loss = clm_loss + q_loss
+
                             y_hat = word_scores.max(1)[1]
                             if self.n_total_iter % self.log_interval == 0:
                                 input_ = y_to_sentence(x_, y_, lengths_, self.evaluator.dico, self.params)
@@ -816,8 +817,9 @@ class Trainer(object):
                     tensor = U
                 else :
                     x_, lengths_, positions_, langs_ = to_cuda(x, lengths, positions, langs)
-                    tensor = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
+                    tensor, q_loss = self.pre_trainer.model('fwd', x=x_, lengths=lengths_, positions=positions_, langs=langs_, causal=False)
                 logits, classif_loss = self.model.predict(tensor, y.to(self.params.device), weights = self.train_data_iter.weights)
+                classif_loss = classif_loss + q_loss
                 #loss, stats = get_loss(self.model, batch, self.params, self.train_data_iter.weights, mode="train", epoch = self.epoch)
                 _, stats = get_loss(None, batch, self.params, None, logits = logits, loss = classif_loss, mode="train", epoch = self.epoch)
                 
@@ -908,8 +910,9 @@ class Trainer(object):
                         x, y, pred_mask = self.pre_trainer.mask_out(x, lengths)
                         # cuda
                         x, y, pred_mask, lengths, positions, langs = to_cuda(x, y, pred_mask, lengths, positions, langs)
-                        tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
+                        tensor, q_loss = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
                         word_scores, loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=True)
+                        loss = loss + q_loss
                         # update stats
                         n_words = y.size(0)
                         xe_loss = loss.item() * len(y)
@@ -935,8 +938,9 @@ class Trainer(object):
                         # cuda
                         x, lengths, positions, langs, pred_mask, y = to_cuda(x, lengths, positions, langs, pred_mask, y)
                         # forward / loss
-                        tensor = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=True)
+                        tensor, q_loss = self.pre_trainer.model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=True)
                         word_scores, loss = self.pre_trainer.model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=True)
+                        loss = loss + q_loss
                         
                         # update stats
                         n_words = y.size(0)

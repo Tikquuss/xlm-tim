@@ -85,8 +85,8 @@ class Translate():
             langs = batch.clone().fill_(self.params.src_id)
 
             # encode source batch and translate it
-            #encoded = self.encoder('fwd', x=batch.cuda(), lengths=lengths.cuda(), langs=langs.cuda(), causal=False)
-            encoded = self.encoder('fwd', x=batch, lengths=lengths, langs=langs, causal=False)
+            #encoded, _ = self.encoder('fwd', x=batch.cuda(), lengths=lengths.cuda(), langs=langs.cuda(), causal=False)
+            encoded, _ = self.encoder('fwd', x=batch, lengths=lengths, langs=langs, causal=False)
             encoded = encoded.transpose(0, 1)
             #decoded, dec_lengths = self.decoder.generate(encoded, lengths.cuda(), self.params.tgt_id, max_len=int(1.5 * lengths.max().item() + 10))
             decoded, dec_lengths = self.decoder.generate(encoded, lengths, self.params.tgt_id, max_len=int(1.5 * lengths.max().item() + 10))

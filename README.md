@@ -26,7 +26,7 @@ See [HowToTrainYourMAMLPytorch](https://github.com/AntreasAntoniou/HowToTrainYou
 
 ## II. Train your own (meta-)model
 
-**Open the illustrative notebook in colab**[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Tikquuss/meta_XLM/blob/master/notebooks/tuto.ipynb)
+**Open the illustrative notebook in colab**[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Tikquuss/xlm-tim/blob/master/notebooks/tuto.ipynb)
 
 **Note** : Most of the bash scripts used in this repository were written on the windows operating system, and can generate this [error](https://prograide.com/pregunta/5588/configure--bin--sh--m-mauvais-interpreteur) on linux platforms.  
 This problem can be corrected with the following command: 

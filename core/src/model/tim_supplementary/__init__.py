@@ -1,1 +1,1 @@
-from .Transformer import TransformerEncoderLayer
+from .Transformer import TransformerEncoderLayer, TransformerDecoderLayer

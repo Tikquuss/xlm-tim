@@ -36,6 +36,7 @@
     "emb_dim":"1024", 
     "n_layers":"6", 
     "n_heads":"8",
+    "dim_feedforward" : 2048,
     "dropout":"0.1", 
     "attention_dropout":"0.1", 
     "gelu_activation":"True", 
@@ -79,13 +80,13 @@
     "asm_div_value":"4",
 
     "tim_layers_pos" : "",
+    "use_group_comm" : "True",
     "n_s" : 2,
     "H" : 8,
     "H_c" : 8,
     "custom_mha" : "False",
     "d_k" : 512, 
     "d_v" : 512, 
-    "dim_feedforward" : 2048,
 
     "log_interval" : "-1",
     "device" : "cuda",
