@@ -62,15 +62,8 @@ class QuantizerFunction(nn.Module):
 
         elif self.Method=="Quantization":
             self.QuantizeFunctions=Quantize(self.hid_dim,self.CodebookSize,self.N_factors[0])#the total codebook size of the method need to be the same
-            
-
-        #self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
-        #self.device = T.device('cpu')
-        #self.to(self.device)
-
-
+    
     def forward(self, state):
-
         
         ####use lower temperature (sharper softmax), whe evaluating
         if self.training:
@@ -99,7 +92,7 @@ class QuantizerFunction(nn.Module):
             elif self.Method=="Adaptive_Quantization":
                 
                 ###key-query attention to decide which quantization_function to use
-                query=state.reshape(bsz*T,1,Hsz)
+                query=0 + state.reshape(bsz*T,1,Hsz)
                 
                 _,att_scores=self.quantization_attention(query=query, key=self.quantization_keys,value=self.quantization_keys)
 
@@ -120,10 +113,10 @@ class QuantizerFunction(nn.Module):
                  
 
 
-                N_factors_CBsizes_vec=torch.tensor(self.N_factors_CBsizes).to(self.device).float()
+                N_factors_CBsizes_vec=torch.tensor(self.N_factors_CBsizes).to(state.device).float()
                 
-                N_factors_vec=N_factors_CBsizes_vec[:,0].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(self.device)    
-                N_CBsizes_vec=N_factors_CBsizes_vec[:,1].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(self.device)    
+                N_factors_vec=N_factors_CBsizes_vec[:,0].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(state.device)    
+                N_CBsizes_vec=N_factors_CBsizes_vec[:,1].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(state.device)    
                                 
 
                 bottlenecking_penanlty=(N_factors_vec*att_scores).mean(dim=1).sum()+(torch.log(N_CBsizes_vec)*att_scores).mean(dim=1).sum()
@@ -139,7 +132,7 @@ class QuantizerFunction(nn.Module):
             elif self.Method=="Adaptive_Hierachical":
                 
                 ###key-query attention to decide which quantization_function to use
-                query=state.reshape(bsz*T,1,Hsz)
+                query=0 + state.reshape(bsz*T,1,Hsz)
                 
                 _,att_scores=self.quantization_attention(query=query, key=self.quantization_keys,value=self.quantization_keys)
 
@@ -162,10 +155,10 @@ class QuantizerFunction(nn.Module):
                  
 
 
-                N_factors_CBsizes_vec=torch.tensor(self.N_factors_CBsizes).to(self.device).float()
+                N_factors_CBsizes_vec=torch.tensor(self.N_factors_CBsizes).to(state.device).float()
                 
-                N_factors_vec=N_factors_CBsizes_vec[:,0].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(self.device)    
-                N_CBsizes_vec=N_factors_CBsizes_vec[:,1].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(self.device)    
+                N_factors_vec=N_factors_CBsizes_vec[:,0].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(state.device)    
+                N_CBsizes_vec=N_factors_CBsizes_vec[:,1].unsqueeze(0).unsqueeze(0).repeat(1,att_scores.shape[1],1).to(state.device)    
                                 
 
                 bottlenecking_penanlty=(N_factors_vec*att_scores).mean(dim=1).sum()+(torch.log(N_CBsizes_vec)*att_scores).mean(dim=1).sum()

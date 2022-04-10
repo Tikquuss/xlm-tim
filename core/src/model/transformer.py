@@ -337,6 +337,7 @@ class TransformerModel(nn.Module):
         else :
             q_method = None, #"Original", "Quantization", "Adaptive_Quantization", "Adaptive_Hierachical"
             q_method = "Original"
+            q_method = "Quantization"
             q_method = "Adaptive_Hierachical"
             q_method = "Adaptive_Quantization"
             codebook_size = 16
@@ -347,10 +348,10 @@ class TransformerModel(nn.Module):
 
             key_dim = self.dim
             num_heads = 2
-            if True :
+            if False :
                 self.specialists_selection = HierachicalModuleSelection(query_dim=self.dim, n_specialists=self.n_layers+1, key_dim=key_dim, num_heads=num_heads)
             else :
-                self.specialists_selection = HMSIdentity(query_dim=dim, n_specialists=self.n_layers+1, key_dim=key_dim, num_heads=num_heads)
+                self.specialists_selection = HMSIdentity(query_dim=self.dim, n_specialists=self.n_layers+1, key_dim=key_dim, num_heads=num_heads)
 
             # transformer layers
             self.attentions = nn.ModuleList()
@@ -598,7 +599,7 @@ class TransformerModel(nn.Module):
                 states.append(tensor)
                 extra_loss.append(q_loss)
 
-        tensor = self.specialists_selection(tensor, states)
+        tensor = self.specialists_selection(states[0], states)
         # update cache length
         if cache is not None:
             cache['slen'] += tensor.size(1)
