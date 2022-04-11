@@ -35,4 +35,6 @@ class HMSIdentity(nn.Module):
         self.q = nn.Identity()
 
     def forward(self, tensor, states):
-        return self.q(tensor)
+        #return self.q(tensor)
+        #return states[-1]
+        return 0

@@ -599,7 +599,7 @@ class TransformerModel(nn.Module):
                 states.append(tensor)
                 extra_loss.append(q_loss)
 
-        tensor = self.specialists_selection(states[0], states)
+        tensor = self.specialists_selection(states[0], states) + tensor
         # update cache length
         if cache is not None:
             cache['slen'] += tensor.size(1)

@@ -536,12 +536,13 @@ class XLMBertClassifier(nn.Module):
         """
         if self.freeze_transformer :
             with torch.no_grad():
-                h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output, do_sum = do_sum)
+                h, q_loss = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output, do_sum = do_sum)
         else :
-            h = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output, do_sum = do_sum)
+            h, q_loss = self.embedder.get_embeddings(x, lengths, positions=positions, langs=langs, whole_output = self.whole_output, do_sum = do_sum)
         
         if True :
-            return self.pred_layer(h, y, weights=weights, weight_out=weight_out)
+            scores, loss = self.pred_layer(h, y, weights=weights, weight_out=weight_out)
+            return scores, loss + q_loss
         else :
             # L2 reg : weight_decay in optim handle this
             scores, loss = self.pred_layer(h, y, weights=weights, weight_out=weight_out)
@@ -549,7 +550,7 @@ class XLMBertClassifier(nn.Module):
             l2_reg = 0
             for param in self.parameters():
                 l2_reg += torch.norm(param)
-            return scores, loss + l2_lambda * l2_reg
+            return scores, loss + q_loss + l2_lambda * l2_reg
 
     def predict(self, tensor, y, weights, weight_out = None, do_sum = False):
         """

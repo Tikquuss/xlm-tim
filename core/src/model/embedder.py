@@ -224,4 +224,4 @@ class SentenceEmbedder(object):
         # single-vector sentence representation (first column of last layer)
         if do_sum :
             return tensor.sum(dim=0)
-        return tensor[0] if not whole_output else tensor
+        return tensor[0] if not whole_output else tensor, q_loss
